@@ -1,22 +1,62 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
 import requests
 from azure.identity import ClientSecretCredential
-import os
-import urllib.parse
-
-S_EXCEL_PATH = "140.スケジュール・時間割/2025(R7)年度 時間割/【2025・04～09月 前期】全学年時間割.xlsx"
-F_EXCEL_PATH = "140.スケジュール・時間割/2025(R7)年度 時間割/【2025・10～03月 後期】全学年時間割.xlsx"
+from datetime import datetime
 
 
-
+# =========================================
+# SharePoint 設定（環境変数から取得）
+# =========================================
+TENANT_ID = os.getenv("TENANT_ID")
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-TENANT_ID = os.getenv("TENANT_ID")
 
-HOSTNAME = os.getenv("HOSTNAME", "ncnj.sharepoint.com")
-SITE_PATH = os.getenv("SITE_PATH", "/sites/staff_sharedfolders")
+SITE_HOST = "ncnj.sharepoint.com"
+SITE_PATH = "/sites/staff_sharedfolders"
 
-def get_access_token():
-    """アクセストークンを取得"""
+
+# =========================================
+# 年度判定
+# =========================================
+def guess_years():
+    today = datetime.now()
+
+    # 1〜3月に実行されたら → current = 前年, next = 当年
+    if today.month <= 3:
+        current_year = today.year - 1
+        next_year = today.year
+    else:
+        current_year = today.year
+        next_year = today.year + 1
+
+    return current_year, next_year
+
+
+# =========================================
+# SharePoint URL を構築
+# =========================================
+def build_sharepoint_url(year, term):
+    """
+    term: 'spring' or 'fall'
+    """
+    jp_year = f"{year}(R{year-2018})年度時間割"
+
+    if term == "spring":
+        filename = f"【{year}・04～09月 前期】全学年時間割.xlsx"
+    else:
+        filename = f"【{year}・10～03月 後期】全学年時間割.xlsx"
+
+    # sharepoint の :x:/ 形式を利用
+    return f"https://{SITE_HOST}/:x:/s/staff_sharedfolders/{jp_year}/{filename}"
+
+
+# =========================================
+# SharePoint authentication
+# =========================================
+def get_token():
     credential = ClientSecretCredential(
         tenant_id=TENANT_ID,
         client_id=CLIENT_ID,
@@ -26,112 +66,50 @@ def get_access_token():
     return token.token
 
 
-def make_graph_api_request(token, base_url, path_params=None, operation_name="API呼び出し", include_accept_header=True):
-    """Microsoft Graph APIへのGETリクエストを実行し、レスポンスを処理する共通関数
-    
-    Args:
-        token (str): アクセストークン
-        base_url (str): ベースURL
-        path_params (str, optional): パスパラメータ（URLエンコードが必要な場合）
-        operation_name (str): 操作名（ログ出力用）
-        include_accept_header (bool): Accept: application/jsonヘッダーを含めるかどうか
-    
-    Returns:
-        requests.Response or None: 成功時はResponseオブジェクト、失敗時はNone
-    """
-    # URLを構築
-    if path_params:
-        encoded_path = urllib.parse.quote(path_params)
-        url = f"{base_url}{encoded_path}"
-    else:
-        url = base_url
-    
-    # ヘッダーを構築
-    headers = {'Authorization': f'Bearer {token}'}
-    if include_accept_header:
-        headers['Accept'] = 'application/json'
-    
-    try:
-        response = requests.get(url, headers=headers)
-        print(f"api:{operation_name}結果: {response.status_code}")
-        
-        if response.status_code == 200:
-            return response
-        else:
-            print(f"api:✗ {operation_name}失敗: {response.text[:200]}")
-            return None
-            
-    except Exception as e:
-        print(f"✗ {operation_name}エラー: {e}")
-        return None
+# =========================================
+# ダウンロード
+# =========================================
+def download_file(url, save_path, token):
+    headers = {"Authorization": f"Bearer {token}"}
+    print(f"→ Downloading: {url}")
+
+    resp = requests.get(url, headers=headers)
+
+    if resp.status_code != 200:
+        print(f"  ✗ Failed: {resp.status_code}")
+        return False
+
+    with open(save_path, "wb") as f:
+        f.write(resp.content)
+
+    print(f"  ✓ Saved to {save_path}")
+    return True
 
 
-def get_site_id_from_url(token, hostname, site_path):
-    """サイトパスからサイトIDを取得"""
-    base_url = f"https://graph.microsoft.com/v1.0/sites/{hostname}:{site_path}"
-    response = make_graph_api_request(token, base_url, operation_name="サイト情報取得")
-    if response:
-        site_data = response.json()
-        site_id = site_data['id']
-        print(f"✓ サイトID取得成功: {site_id}")
-        return site_id
-    else:
-        return None
+# =========================================
+# メイン処理
+# =========================================
+def main():
+    token = get_token()
+    current_year, next_year = guess_years()
 
-def get_file_by_path(token, site_id, file_path):
-    """ファイルパスからファイル情報を取得"""
-    base_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/root:/"
-    response = make_graph_api_request(token, base_url, path_params=file_path, operation_name="ファイル情報取得")
-    if response:
-        file_data = response.json()
-        file_id = file_data['id']
-        print(f"✓ ファイル情報取得成功: {file_id}")
-        return file_data
-    else:
-        return None
+    print(f"◆ current_year = {current_year}")
+    print(f"◆ next_year    = {next_year}")
 
-def download_file_by_id(token, site_id, file_id, output_filename):
-    """ファイルIDでファイルをダウンロード"""
-    base_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{file_id}/content"
-    response = make_graph_api_request(token, base_url, operation_name="ダウンロード", include_accept_header=False)
-    if response:
-        content = response.content
-        with open(output_filename, 'wb') as f:
-            f.write(content)
-        print(f"✓ ダウンロード成功: {len(content)} bytes")
-        return True
-    else:
-        return None
+    # 保存名は excel2json.py と完全一致させる
+    FILES = [
+        ("spring", current_year, "schedule_spring_CURRENT.xlsx"),
+        ("fall",   current_year, "schedule_fall_CURRENT.xlsx"),
+        ("spring", next_year,   "schedule_spring_NEXT.xlsx"),
+        ("fall",   next_year,   "schedule_fall_NEXT.xlsx"),
+    ]
 
-def download_excel_from_sharepoint_url(hostname, site_path, file_path, output_filename=None):
-    """SharePointのURLから直接Excelファイルをダウンロード"""
+    os.makedirs(".", exist_ok=True)
 
-    # 1. アクセストークンを取得
-    token = get_access_token()
-    # 2. サイトIDを取得
-    site_id = get_site_id_from_url(token, hostname, site_path)
-    
-    if not site_id:
-        print("✗ サイトIDの取得に失敗しました")
-        return None
-    
-    # 3. ファイル情報を取得
-    file_data = get_file_by_path(token, site_id, file_path)
-    if not file_data:
-        print("✗ ファイル情報の取得に失敗しました")
-        return None
-    
-    # 4. ファイルをダウンロード
-    download_file_by_id(token, site_id, file_data['id'], output_filename)
+    for term, year, save_name in FILES:
+        url = build_sharepoint_url(year, term)
+        download_file(url, save_name, token)
 
 
 if __name__ == "__main__":
-    # 前期 R7.09.04 Add by SUGIE
-    download_excel_from_sharepoint_url(
-        HOSTNAME, SITE_PATH, S_EXCEL_PATH , "schedule_spring.xlsx"
-    )
-
-    # 後期 R7.09.04 Add by SUGIE
-    download_excel_from_sharepoint_url(
-        HOSTNAME, SITE_PATH, F_EXCEL_PATH , "schedule_fall.xlsx"
-    )
+    main()
