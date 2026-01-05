@@ -27545,6 +27545,14 @@
   },
   {
     "grade": "1年生",
+    "date": "2026-01-01",
+    "period": 1,
+    "courses": "あ",
+    "room": "",
+    "comment": ""
+  },
+  {
+    "grade": "1年生",
     "date": "2026-01-12",
     "period": 0,
     "courses": "",
